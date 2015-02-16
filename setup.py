@@ -26,6 +26,8 @@ except IOError:
 install_requires = [
     'pyramid>=1.2dev',
     'transaction',
+    'zope.deprecation',
+    'zope.interface',
     ]
 
 testing_extras = ['nose', 'coverage']

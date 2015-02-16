@@ -1,71 +1,77 @@
 # -*- coding: utf-8 -*-
-
 import unittest
+
 import transaction
 from transaction import TransactionManager
 from pyramid import testing
+from pyramid.httpexceptions import HTTPNotFound
+from pyramid.httpexceptions import HTTPRedirection
+
 
 class TestDefaultCommitVeto(unittest.TestCase):
-    def _callFUT(self, response, request=None):
+
+    def _call_fut(self, response, request=None):
         from pyramid_tm import default_commit_veto
         return default_commit_veto(request, response)
 
     def test_it_true_500(self):
         response = DummyResponse('500 Server Error')
-        self.assertTrue(self._callFUT(response))
+        self.assertTrue(self._call_fut(response))
 
     def test_it_true_503(self):
         response = DummyResponse('503 Service Unavailable')
-        self.assertTrue(self._callFUT(response))
+        self.assertTrue(self._call_fut(response))
 
     def test_it_true_400(self):
         response = DummyResponse('400 Bad Request')
-        self.assertTrue(self._callFUT(response))
+        self.assertTrue(self._call_fut(response))
 
     def test_it_true_411(self):
         response = DummyResponse('411 Length Required')
-        self.assertTrue(self._callFUT(response))
+        self.assertTrue(self._call_fut(response))
 
     def test_it_false_200(self):
         response = DummyResponse('200 OK')
-        self.assertFalse(self._callFUT(response))
+        self.assertFalse(self._call_fut(response))
 
     def test_it_false_201(self):
         response = DummyResponse('201 Created')
-        self.assertFalse(self._callFUT(response))
+        self.assertFalse(self._call_fut(response))
 
     def test_it_false_301(self):
         response = DummyResponse('301 Moved Permanently')
-        self.assertFalse(self._callFUT(response))
+        self.assertFalse(self._call_fut(response))
 
     def test_it_false_302(self):
         response = DummyResponse('302 Found')
-        self.assertFalse(self._callFUT(response))
+        self.assertFalse(self._call_fut(response))
 
     def test_it_false_x_tm_commit(self):
-        response = DummyResponse('200 OK', {'x-tm':'commit'})
-        self.assertFalse(self._callFUT(response))
+        response = DummyResponse('200 OK', {'x-tm': 'commit'})
+        self.assertFalse(self._call_fut(response))
 
     def test_it_true_x_tm_abort(self):
-        response = DummyResponse('200 OK', {'x-tm':'abort'})
-        self.assertTrue(self._callFUT(response))
+        response = DummyResponse('200 OK', {'x-tm': 'abort'})
+        self.assertTrue(self._call_fut(response))
 
     def test_it_true_x_tm_anythingelse(self):
-        response = DummyResponse('200 OK', {'x-tm':''})
-        self.assertTrue(self._callFUT(response))
+        response = DummyResponse('200 OK', {'x-tm': ''})
+        self.assertTrue(self._call_fut(response))
 
-class Test_tm_tween_factory(unittest.TestCase):
-    def setUp(self):
+
+class TestTmTweenFactory(unittest.TestCase):
+
+    def setup_method(self, method):
         self.txn = DummyTransaction()
         self.request = DummyRequest()
         self.response = DummyResponse()
         self.registry = DummyRegistry()
         self.config = testing.setUp()
 
-    def tearDown(self):
+    def teardown_method(self, method):
         testing.tearDown()
 
-    def _callFUT(self, handler=None, registry=None, request=None, txn=None):
+    def _call_fut(self, handler=None, registry=None, request=None, txn=None):
         if handler is None:
             def handler(request):
                 return self.response
@@ -83,46 +89,76 @@ class Test_tm_tween_factory(unittest.TestCase):
     def test_repoze_tm_active(self):
         request = DummyRequest()
         request.environ['repoze.tm.active'] = True
-        result = self._callFUT(request=request)
+        result = self._call_fut(request=request)
         self.assertEqual(result, self.response)
         self.assertFalse(self.txn.began)
 
     def test_should_activate_true(self):
         registry = DummyRegistry(
-            {'tm.activate_hook':'pyramid_tm.tests.activate_true'})
-        result = self._callFUT(registry=registry)
+            {'tm.activate_hook': 'pyramid_tm.tests.activate_true'})
+        result = self._call_fut(registry=registry)
         self.assertEqual(result, self.response)
         self.assertTrue(self.txn.began)
 
     def test_should_activate_false(self):
         registry = DummyRegistry(
-            {'tm.activate_hook':'pyramid_tm.tests.activate_false'})
-        result = self._callFUT(registry=registry)
+            {'tm.activate_hook': 'pyramid_tm.tests.activate_false'})
+        result = self._call_fut(registry=registry)
         self.assertEqual(result, self.response)
         self.assertFalse(self.txn.began)
 
     def test_handler_exception(self):
         def handler(request):
             raise NotImplementedError
-        self.assertRaises(NotImplementedError, self._callFUT, handler=handler)
+        self.assertRaises(NotImplementedError, self._call_fut, handler=handler)
         self.assertTrue(self.txn.began)
         self.assertTrue(self.txn.aborted)
         self.assertFalse(self.txn.committed)
 
+    def test_raised_http_redirect_does_commit(self):
+        response = HTTPRedirection(location='/')
+
+        def handler(request):
+            raise response
+
+        txn = DummyTransaction(retryable=True)
+        result = self._call_fut(handler=handler, txn=txn)
+        self.assertTrue(txn.began)
+        self.assertEqual(txn.committed, 1)
+        self.assertEqual(txn.aborted, 0)
+        self.assertEqual(result, response)
+
+    def test_raised_http_404_doesnt_commit(self):
+        response = HTTPNotFound()
+
+        def handler(request):
+            raise response
+
+        txn = DummyTransaction(retryable=True)
+        result = self._call_fut(handler=handler, txn=txn)
+        self.assertTrue(txn.began)
+        self.assertEqual(txn.committed, 0)
+        self.assertEqual(txn.aborted, 1)
+        self.assertEqual(result, response)
+
     def test_handler_retryable_exception(self):
         from transaction.interfaces import TransientError
+
         class Conflict(TransientError):
             pass
+
         count = []
         response = DummyResponse()
         self.registry.settings['tm.attempts'] = '3'
+
         def handler(request, count=count):
             count.append(True)
             if len(count) == 3:
                 return response
             raise Conflict
+
         txn = DummyTransaction(retryable=True)
-        result = self._callFUT(handler=handler, txn=txn)
+        result = self._call_fut(handler=handler, txn=txn)
         self.assertTrue(txn.began)
         self.assertEqual(txn.committed, 1)
         self.assertEqual(txn.aborted, 2)
@@ -131,65 +167,72 @@ class Test_tm_tween_factory(unittest.TestCase):
 
     def test_handler_retryable_exception_defaults_to_1(self):
         from transaction.interfaces import TransientError
+
         class Conflict(TransientError):
             pass
+
         count = []
+
         def handler(request, count=count):
             raise Conflict
-        self.assertRaises(Conflict, self._callFUT, handler=handler)
+
+        self.assertRaises(Conflict, self._call_fut, handler=handler)
 
     def test_handler_isdoomed(self):
         txn = DummyTransaction(True)
-        self._callFUT(txn=txn)
+        self._call_fut(txn=txn)
         self.assertTrue(txn.began)
         self.assertTrue(txn.aborted)
         self.assertFalse(txn.committed)
 
     def test_handler_w_native_unauthenticated_userid(self):
         self.config.testing_securitypolicy(userid='phred')
-        self._callFUT()
+        self._call_fut()
         self.assertEqual(self.txn.username, ' phred')
 
     def test_handler_w_unicode_unauthenticated_userid(self):
         from pyramid.compat import native_
         from pyramid_tm.compat import PY3
-        USERID = b'phred/\xd1\x80\xd0\xb5\xd1\x81'.decode('utf-8')
-        self.config.testing_securitypolicy(userid=USERID)
-        self._callFUT()
+        userid = b'phred/\xd1\x80\xd0\xb5\xd1\x81'.decode('utf-8')
+        self.config.testing_securitypolicy(userid=userid)
+        self._call_fut()
         if PY3:  # pragma: no cover Py3k
             self.assertEqual(self.txn.username, ' phred/рес')
         else:
             self.assertEqual(self.txn.username,
-                             ' ' + native_(USERID, 'utf-8'))
+                             ' ' + native_(userid, 'utf-8'))
 
     def test_handler_w_integer_unauthenticated_userid(self):
         # See https://github.com/Pylons/pyramid_tm/issues/28
-        USERID = 1234
-        self.config.testing_securitypolicy(userid=USERID)
-        self._callFUT()
+        userid = 1234
+        self.config.testing_securitypolicy(userid=userid)
+        self._call_fut()
         self.assertEqual(self.txn.username, ' 1234')
 
     def test_handler_notes(self):
-        self._callFUT()
+        self._call_fut()
         self.assertEqual(self.txn._note, '/')
         self.assertEqual(self.txn.username, None)
 
     def test_handler_notes_unicode_decode_error(self):
         class DummierRequest(DummyRequest):
+
             def _get_path_info(self):
                 b"\xc0".decode("utf-8")
+
             def _set_path_info(self, val):
                 pass
             path_info = property(_get_path_info, _set_path_info)
 
         request = DummierRequest()
 
-        self._callFUT(request=request)
+        self._call_fut(request=request)
         self.assertEqual(self.txn._note, 'Unable to decode path as unicode')
         self.assertEqual(self.txn.username, None)
 
     def test_handler_notes_unicode_path(self):
         from pyramid_tm.compat import PY3
+
         class DummierRequest(DummyRequest):
 
             def _get_path_info(self):
@@ -201,12 +244,13 @@ class Test_tm_tween_factory(unittest.TestCase):
             path_info = property(_get_path_info, _set_path_info)
 
         request = DummierRequest()
-        self._callFUT(request=request)
+        self._call_fut(request=request)
         if PY3:  # pragma: no cover Py3k
             self.assertEqual(self.txn._note, 'collection/рес')
         else:
-            self.assertEqual(self.txn._note,
-                             'collection/\xd1\x80\xd0\xb5\xd1\x81')
+            self.assertEqual(
+                self.txn._note,
+                'collection/\xd1\x80\xd0\xb5\xd1\x81')
         self.assertEqual(self.txn.username, None)
 
     def test_handler_notes_native_str_path(self):
@@ -221,16 +265,17 @@ class Test_tm_tween_factory(unittest.TestCase):
             path_info = property(_get_path_info, _set_path_info)
 
         request = DummierRequest()
-        self._callFUT(request=request)
+        self._call_fut(request=request)
         self.assertEqual(self.txn._note, 'some/resource')
         self.assertEqual(self.txn.username, None)
 
     def test_500_without_commit_veto(self):
         response = DummyResponse()
         response.status = '500 Bad Request'
+
         def handler(request):
             return response
-        result = self._callFUT(handler=handler)
+        result = self._call_fut(handler=handler)
         self.assertEqual(result, response)
         self.assertTrue(self.txn.began)
         self.assertFalse(self.txn.aborted)
@@ -241,9 +286,10 @@ class Test_tm_tween_factory(unittest.TestCase):
         settings['tm.commit_veto'] = 'pyramid_tm.default_commit_veto'
         response = DummyResponse()
         response.status = '500 Bad Request'
+
         def handler(request):
             return response
-        result = self._callFUT(handler=handler)
+        result = self._call_fut(handler=handler)
         self.assertEqual(result, response)
         self.assertTrue(self.txn.began)
         self.assertTrue(self.txn.aborted)
@@ -252,10 +298,11 @@ class Test_tm_tween_factory(unittest.TestCase):
     def test_null_commit_veto(self):
         response = DummyResponse()
         response.status = '500 Bad Request'
+
         def handler(request):
             return response
-        registry = DummyRegistry({'tm.commit_veto':None})
-        result = self._callFUT(handler=handler, registry=registry)
+        registry = DummyRegistry({'tm.commit_veto': None})
+        result = self._call_fut(handler=handler, registry=registry)
         self.assertEqual(result, response)
         self.assertTrue(self.txn.began)
         self.assertFalse(self.txn.aborted)
@@ -263,8 +310,8 @@ class Test_tm_tween_factory(unittest.TestCase):
 
     def test_commit_veto_true(self):
         registry = DummyRegistry(
-            {'tm.commit_veto':'pyramid_tm.tests.veto_true'})
-        result = self._callFUT(registry=registry)
+            {'tm.commit_veto': 'pyramid_tm.tests.veto_true'})
+        result = self._call_fut(registry=registry)
         self.assertEqual(result, self.response)
         self.assertTrue(self.txn.began)
         self.assertTrue(self.txn.aborted)
@@ -272,15 +319,15 @@ class Test_tm_tween_factory(unittest.TestCase):
 
     def test_commit_veto_false(self):
         registry = DummyRegistry(
-            {'tm.commit_veto':'pyramid_tm.tests.veto_false'})
-        result = self._callFUT(registry=registry)
+            {'tm.commit_veto': 'pyramid_tm.tests.veto_false'})
+        result = self._call_fut(registry=registry)
         self.assertEqual(result, self.response)
         self.assertTrue(self.txn.began)
         self.assertFalse(self.txn.aborted)
         self.assertTrue(self.txn.committed)
 
     def test_commitonly(self):
-        result = self._callFUT()
+        result = self._call_fut()
         self.assertEqual(result, self.response)
         self.assertTrue(self.txn.began)
         self.assertFalse(self.txn.aborted)
@@ -288,58 +335,63 @@ class Test_tm_tween_factory(unittest.TestCase):
 
     def test_commit_veto_alias(self):
         registry = DummyRegistry(
-            {'pyramid_tm.commit_veto':'pyramid_tm.tests.veto_true'})
-        result = self._callFUT(registry=registry)
+            {'pyramid_tm.commit_veto': 'pyramid_tm.tests.veto_true'})
+        result = self._call_fut(registry=registry)
         self.assertEqual(result, self.response)
         self.assertTrue(self.txn.began)
         self.assertTrue(self.txn.aborted)
         self.assertFalse(self.txn.committed)
 
-class Test_create_tm(unittest.TestCase):
 
-    def setUp(self):
+class TestCreateTm(unittest.TestCase):
+
+    def setup_method(self, method):
         self.request = DummyRequest()
         self.request.registry = Dummy(settings={})
         # Get rid of the request.transaction attribute since it shouldn't be
         # here yet.
         del self.request.tm
 
-
-    def tearDown(self):
+    def teardown_method(self, method):
         testing.tearDown()
 
-    def _callFUT(self, request=None):
+    def _call_fut(self, request=None):
         if request is None:
             request = self.request
         from pyramid_tm import create_tm
         return create_tm(request)
 
     def test_default_threadlocal(self):
-        self.assertTrue(self._callFUT() is transaction.manager)
+        self.assertTrue(self._call_fut() is transaction.manager)
 
     def test_overridden_manager(self):
         txn = DummyTransaction()
         request = DummyRequest()
         request.registry = Dummy(settings={})
         request.registry.settings["tm.manager_hook"] = lambda request: txn
-        self.assertTrue(self._callFUT(request=request) is txn)
+        self.assertTrue(self._call_fut(request=request) is txn)
 
 
 def veto_true(request, response):
     return True
 
+
 def veto_false(request, response):
     return False
 
+
 def activate_true(request):
     return True
+
 
 def activate_false(request):
     return False
 
 create_manager = None
 
-class Test_includeme(unittest.TestCase):
+
+class TestIncludeme(unittest.TestCase):
+
     def test_it(self):
         from pyramid.tweens import EXCVIEW
         from pyramid_tm import includeme
@@ -371,11 +423,15 @@ class Test_includeme(unittest.TestCase):
             config.registry.settings["tm.manager_hook"] is create_manager
         )
 
+
 class Dummy(object):
+
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
+
 class DummyRegistry(object):
+
     def __init__(self, settings=None):
         if settings is None:
             settings = {}
@@ -404,28 +460,30 @@ class DummyTransaction(TransactionManager):
     def get(self):
         return self
 
-    def setUser(self, name, path='/'):
+    def setUser(self, name, path='/'):  # noqa
         self.username = "%s %s" % (path, name)
 
-    def isDoomed(self):
+    def isDoomed(self):  # noqa
         return self.doomed
 
     def begin(self):
-        self.began+=1
+        self.began += 1
         self.active = True
         return self
 
     def commit(self):
-        self.committed+=1
+        self.committed += 1
 
     def abort(self):
         self.active = False
-        self.aborted+=1
+        self.aborted += 1
 
     def note(self, value):
         self._note = value
 
+
 class DummyRequest(testing.DummyRequest):
+
     def __init__(self, *args, **kwargs):
         self.made_seekable = 0
         self.tm = TransactionManager()
@@ -434,14 +492,18 @@ class DummyRequest(testing.DummyRequest):
     def make_body_seekable(self):
         self.made_seekable += 1
 
+
 class DummyResponse(object):
+
     def __init__(self, status='200 OK', headers=None):
         self.status = status
         if headers is None:
             headers = {}
         self.headers = headers
 
+
 class DummyConfig(object):
+
     def __init__(self):
         self.registry = Dummy(settings={})
         self.tweens = []

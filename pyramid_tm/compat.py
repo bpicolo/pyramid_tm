@@ -2,7 +2,7 @@ import sys
 
 PY3 = sys.version_info[0] == 3
 
-if PY3: # pragma: no cover
+if PY3:  # pragma: no cover
     import builtins
     exec_ = getattr(builtins, "exec")
 
@@ -21,7 +21,7 @@ if PY3: # pragma: no cover
             return str(s, encoding, errors)
         return str(s)
 
-else: # pragma: no cover
+else:  # pragma: no cover
     def exec_(code, globs=None, locs=None):
         """Execute code in a namespace."""
         if globs is None:
@@ -41,7 +41,7 @@ else: # pragma: no cover
     raise tp, value, tb
 """)
 
-    def native_(s, encoding='latin-1', errors='strict'): #pragma NO COVER
+    def native_(s, encoding='latin-1', errors='strict'):  # pragma NO COVER
         if isinstance(s, text_type):
             return s.encode(encoding, errors)
         return str(s)

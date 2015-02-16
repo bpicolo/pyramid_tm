@@ -3,6 +3,7 @@
 import unittest
 import transaction
 from transaction import TransactionManager
+from pyramid import httpexceptions
 from pyramid import testing
 
 class TestDefaultCommitVeto(unittest.TestCase):
@@ -108,6 +109,32 @@ class Test_tm_tween_factory(unittest.TestCase):
         self.assertTrue(self.txn.began)
         self.assertTrue(self.txn.aborted)
         self.assertFalse(self.txn.committed)
+
+    def test_raised_http_redirect_does_commit(self):
+        response = httpexceptions.HTTPRedirection(location='/')
+
+        def handler(request):
+            raise response
+
+        txn = DummyTransaction(retryable=True)
+        result = self._callFUT(handler=handler, txn=txn)
+        self.assertTrue(txn.began)
+        self.assertEqual(txn.committed, 1)
+        self.assertEqual(txn.aborted, 0)
+        self.assertEqual(result, response)
+
+    def test_raised_http_404_doesnt_commit(self):
+        response = httpexceptions.HTTPNotFound()
+
+        def handler(request):
+            raise response
+
+        txn = DummyTransaction(retryable=True)
+        result = self._callFUT(handler=handler, txn=txn)
+        self.assertTrue(txn.began)
+        self.assertEqual(txn.committed, 0)
+        self.assertEqual(txn.aborted, 1)
+        self.assertEqual(result, response)
 
     def test_handler_retryable_exception(self):
         from transaction.interfaces import TransientError
